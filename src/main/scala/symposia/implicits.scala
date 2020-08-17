@@ -23,7 +23,7 @@ import scala.annotation.implicitNotFound
   * 2. The common conventions built atop those core sorts.
   * 3. Tactics and IDE features that can save you from going completely mad when implicits aren't behaving.
   */
-object explicating_implicits {}
+object explicating_implicits
 
 /**
   * 1. Implicit Conversions
@@ -35,18 +35,19 @@ object explicating_implicits {}
   * "If an expression `e` is of type `A`, and `A` does not conform to the expression’s expected type `B`.
   * A conversion `c` is searched for which is applicable to `e` and whose result type conforms to `B`."
   *
-  * In other words, the compiler searches for an implicit function of type `A => B`.
+  * In other words, when you try to use an `A` where a `B` is expected, the compiler searches for an implicit function
+  * of type `A => B` and then applies it to `A`.
   */
 object implicit_conversions_1 {
 
   import scala.languageFeature.implicitConversions
 
-  /**
-    * Here is our implicit function from `A => B`
-    *
-    * Note: You must have imported [[scala.languageFeature.implicitConversions]] into scope wherever you'd like to
-    * define an implicit conversion, otherwise you'll get a warning.
-    */
+//  /**
+//    * Here is our implicit function from `A => B`
+//    *
+//    * Note: You must have imported [[scala.languageFeature.implicitConversions]] into scope wherever you'd like to
+//    * define an implicit conversion, otherwise you'll get a warning.
+//    */
   implicit def double2Int(double: Double): Int = double.toInt
 
   val double: Double = 10.0
@@ -65,6 +66,14 @@ object implicit_conversions_1 {
   *    mismatch error. The implicit conversion cannot fire if it doesn't exist. This error would occur if you moved the
   *    implicit out of scope, say by wrapping it in another object named `Implicit Prison`. Try it if you don't
   *    believe me.
+  *
+  * 3. Search for the action "Show Implicit Hints" (or attempt to trigger the finger-contorting keyboard shortcut) and
+  *    enable it. This shortcut may take a moment to activate, depending on the number and complexity of the implicits
+  *    currently being used. You should see a grayed out [[double2Int]] wrapping `double`; the implicit made explicit!
+  *
+  *    Personally, I don't use this as much as the more targeted shortcuts, like "Show implicit conversions" and
+  *    "Show implicit parameters" (as you'll see in [[implicit_parameters]]. But it can useful to know about this
+  *    _Sixth Sense_ for implicits. Implicits are truly the (SPOILER) Bruce Willisses of Scala.
   */
 }
 
@@ -113,6 +122,7 @@ object implicit_conversions_2 {
   * 3. Hit `alt-enter` with your caret over `"oh no"` to open the hint menu, and select "Make implicit conversion
   *    explicit". You should see `Predef.augmentString("oh no").appended('!')`
   */
+
 }
 
 /**
@@ -133,7 +143,7 @@ object implicit_parameters {
   def main(args: Array[String]): Unit =
     println(implicitRussianRoulette)
 
-  val otherInt: Int = 100
+  val otherInt = 100
 
   /**
   * EXERCISE
@@ -285,8 +295,129 @@ object implicit_resolution {
   }
 }
 
+// WARNING: Everything from here on out is a little wacky.
+
+/**
+  * Chaining implicits [[https://docs.scala-lang.org/tutorials/FAQ/chaining-implicits.html]]
+  */
+object chaining_implicits {
+  sealed trait Power { self =>
+    def exert: String = self match {
+      case Flight          => "I'm flying! I'm really flying!"
+      case SpontaneousBees => "Ahhhhhhhhhhhh! Oh no! My eyes!"
+    }
+  }
+  case object Flight          extends Power
+  case object SpontaneousBees extends Power
+
+  implicit def int2String(int: Int): String                                 = int.toString
+  implicit def string2Bool[A](string: A)(implicit ev: A => String): Boolean = string.length % 2 == 0
+  implicit def bool2Sign[A](bool: A)(implicit ev: A => Boolean): Power =
+    if (bool) Flight else SpontaneousBees
+
+  def main(args: Array[String]): Unit = {
+    println(9001.exert)
+    println(123.exert)
+  }
+}
+
+object type_level_functions {
+  sealed trait Bit
+  case object Zero extends Bit
+  case object One  extends Bit
+
+  type Zero = Zero.type
+  type One  = One.type
+
+  /**
+    * Let's pretend we want to write a type-aware multiplexing function, which, given a tuple `(A,B)` selects either the
+    * `A` or `B` value based on a `Bit`.
+    *
+    * Even though we know we're always returning `A` if the bit is `Zero` and `B`` if the bit is `One`, the compiler
+    * has no idea. The question is, can we somehow convince it.
+    */
+  def typeUnsafeMultiplexer[A, B](bit: Bit, pair: (A, B)): Any =
+    bit match {
+      case Zero => pair._1
+      case One  => pair._2
+    }
+
+  // What if we could make this compile?
+//  val unsafeZero: String = typeUnsafeMultiplexer(Zero, (1, "Help"))
+//  val unsafeOne: Int     = typeUnsafeMultiplexer(One, (1, "Help"))
+
+  /**
+    * Type-level functions are expressed as traits, whose overloaded implementations are defined via implicits.
+    *
+    * The interface, defined as a trait:
+    * `def mux(bit: Bit, left: L, right: R) : Output = ???`
+    */
+  trait Mux[B <: Bit, L, R] {
+    type Output
+
+    def apply(pair: (L, R)): Output
+  }
+
+  /**
+    * the overloads, defined as implicits:
+    * `def mux(bit: Zero, pair: (L, R)) : L = ???`
+    * `def mux(bit: One, pair: (L, R)) : R = ???`
+    */
+  object Mux {
+    type Aux[B <: Bit, L, R, O] = Mux[B, L, R] { type Output = O }
+
+    //`def mux(bit: Zero, pair: (L, R)) : L = pair._1`
+    //               |           |  |     |=====|
+    //               |           |  |========|  |
+    //               |           |========|  |  |
+    //               |===============|    |  |  |
+    implicit def zeroMux[L, R]: Aux[Zero, L, R, L] = new Mux[Zero, L, R] {
+      type Output = L
+
+      def apply(pair: (L, R)): L = pair._1
+    }
+
+    //`def mux(bit: Zero, pair: (L, R)) : R = pair._2`
+    //               |           |  |     |===|
+    //               |           |  |======|  |
+    //               |           |======|  |  |
+    //               |==============|   |  |  |
+    implicit def oneMux[L, R]: Aux[One, L, R, R] = new Mux[One, L, R] {
+      type Output = R
+
+      def apply(pair: (L, R)): R = pair._2
+    }
+  }
+
+  import Mux._
+
+  def multiplexer[B <: Bit, L, R, O](bit: B, pair: (L, R))(implicit mux: Mux.Aux[B, L, R, O]): O =
+    mux.apply(pair)
+
+  val pair: (Int, String) = (1, "hello")
+  val zero: Int           = multiplexer(Zero, pair)
+  val one: String         = multiplexer(One, pair)
+
+// The true types are known at compile time
+//  val zeroFail: String = multiplexer(Zero, pair)
+//  val oneFail: Int     = multiplexer(One, pair)
+
+  /**
+    * Bonus. A weird way to ditch the unused proxy `bit`.
+    */
+  def multiplexer[B <: Bit] = new MultiplexApply[B]()
+
+  final class MultiplexApply[B <: Bit](val dummy: Boolean = true) extends AnyVal {
+    def apply[L, R, O](pair: (L, R))(implicit mux: Mux.Aux[B, L, R, O]): O = mux.apply(pair)
+  }
+
+  val zeroAgain: Int   = multiplexer[Zero](pair)
+  val oneAgain: String = multiplexer[One](pair)
+}
+
 /**
   * TODO:
   * 1. Chaining Implicits [[https://docs.scala-lang.org/tutorials/FAQ/chaining-implicits.html]]
   * 2. Read about `breakOut` && `CanBuildFrom` [[https://docs.scala-lang.org/tutorials/FAQ/breakout.html]]
+  * 3. ...
   */
